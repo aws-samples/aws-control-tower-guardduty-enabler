@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates an SNS topic and Lambda function used to enable GuardDuty and configure alert centralization in the Security account.
+
+Parameters:
+  SecurityAccountId:
+    Type: String
+    Description: >
+      The Amazon GuardDuty master account ID.
+    AllowedPattern: '^[0-9]{12}$'
+    ConstraintDescription: >
+      The Security Account ID must be a 12 character string.
+    MinLength: 12
+    MaxLength: 12
+  OrgId:
+    Type: String
+    Description: >
+      The Amazon Organizations ID for the Landing Zone.
+    MinLength: 12
+    MaxLength: 12
+    AllowedPattern: '^[o][\-][a-z0-9]{10}$'
+    ConstraintDescription: >
+      The Org Id must be a 12 character string starting with o- and followed by 10 lower case alphanumeric characters
+  S3SourceBucket:
+    Type: String
+    Default: ''
+    Description: >
+      Which S3 bucket contains the gdinviter37.py.zip file for the Inviter lambda function?
+  ComplianceFrequency:
+    Type: Number
+    Default: "60"
+    Description: >
+      How frequently (in minutes, must be > 1 and <3600) should organizational compliance be checked? (Default is 60 minutes)
+    MinValue: 1
+    MaxValue: 3600
+    ConstraintDescription: >
+      Compliance Frequency must be a number between 1 and 3600, inclusive.
+  RoleToAssume:
+    Type: String
+    Default: 'AWSControlTowerExecution'
+    Description: >
+      What role should be assumed in child accounts to enable GuardDuty?  The default is AWSControlTowerExecution for a control tower environment.
+
+Resources:
+  GDAggregatorRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+      - PolicyName: GDAggregatorPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - organizations:ListAccounts
+            - organizations:DescribeAccount
+            Resource: '*'
+            Condition:
+              StringEquals:
+                "aws:PrincipalOrgId": !Sub ${OrgId}
+          - Effect: Allow
+            Action:
+            - sts:AssumeRole
+            Resource: !Sub 'arn:aws:iam::*:role/${RoleToAssume}'
+            Condition:
+              StringEquals:
+                "aws:PrincipalOrgId": !Sub ${OrgId}
+          - Effect: Allow
+            Action:
+            - sns:Publish
+            Resource: !Ref GuardDutyInviterTopic
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource: 
+              -  !Sub 'arn:aws:logs:us-east-1:${AWS::AccountId}:log-group:/aws/lambda/*'
+          - Effect: Allow
+            Action:
+              - 'iam:GetRole'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'sts:AssumeRole'
+            Resource: !Sub 'arn:aws:iam::*:role/${RoleToAssume}'
+          - Effect: Allow
+            Action:
+              - 'guardduty:acceptinvitation'
+              - 'guardduty:createdetector'
+              - 'guardduty:createmembers'
+              - 'guardduty:getdetector'
+              - 'guardduty:invitemembers'
+              - 'guardduty:listdetectors'
+              - 'guardduty:listmembers'
+              - 'guardduty:listinvitations'
+              - 'guardduty:updatedetector'
+            Resource: '*'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "Organizations doesn't have arns, so we have to use an asterisk in the policy"
+
+  GDInviterLambda: 
+    Type: "AWS::Lambda::Function"
+    Properties: 
+      Handler: "gdinviter.lambda_handler"
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/${GDAggregatorRole}"
+      Code: 
+        S3Bucket: !Ref S3SourceBucket
+        S3Key: gdinviter37.py.zip
+      Runtime: "python3.7"
+      MemorySize: 128
+      Timeout: 300
+      Environment:
+        Variables:
+            assume_role: !Sub ${RoleToAssume}
+            ct_root_account: !Sub ${AWS::AccountId}
+            master_account: !Sub ${SecurityAccountId}
+            topic: !Ref GuardDutyInviterTopic
+    DependsOn: GDAggregatorRole
+
+  GuardDutyInviterTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: GD_Inviter
+      TopicName: GuardDutyInviterTopic
+
+  GuardDutyInviterTopicLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt GDInviterLambda.Arn
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref GuardDutyInviterTopic
+
+  GuardDutyInviterSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt GDInviterLambda.Arn
+      Protocol: lambda
+      TopicArn: !Ref GuardDutyInviterTopic
+
+  ScheduledRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "DailyLambdaTrigger"
+      ScheduleExpression: !Sub "rate(${ComplianceFrequency} minutes)"
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: !GetAtt GDInviterLambda.Arn
+          Id: "DailyInvite"
+
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !GetAtt GDInviterLambda.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt ScheduledRule.Arn
