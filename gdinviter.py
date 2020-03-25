@@ -73,7 +73,8 @@ def get_account_list():
     while 'NextToken' in accounts:
         accountsnexttoken = accounts['NextToken']
         moreaccounts = orgclient.list_accounts(NextToken=accountsnexttoken)
-        accounts = moreaccounts['Accounts'].append(accounts['Accounts'])
+        moreaccounts['Accounts'] = accounts['Accounts'] + moreaccounts['Accounts']
+        accounts = moreaccounts
     LOGGER.debug(accounts)
     for account in accounts['Accounts']:
         LOGGER.debug(account)
