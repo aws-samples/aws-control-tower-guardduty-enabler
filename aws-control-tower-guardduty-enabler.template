@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates an SNS topic and Lambda function used to enable GuardDuty and configure alert centralization in the Security account.
+
+Parameters:
+  SecurityAccountId:
+    Type: String
+    Description: Which account will be the GuardDuty Master?  Enter the AWS account ID. (This is generally the AWS Control Tower Audit account)
+    AllowedPattern: '^[0-9]{12}$'
+    ConstraintDescription: The Security Account ID must be a 12 character string.
+    MinLength: 12
+    MaxLength: 12
+  OrganizationId:
+    Type: String
+    Description: AWS Organizations ID for the Control Tower. This is used to restrict permissions to least privilege.
+    MinLength: 12
+    MaxLength: 12
+    AllowedPattern: '^[o][\-][a-z0-9]{10}$'
+    ConstraintDescription: The Org Id must be a 12 character string starting with o- and followed by 10 lower case alphanumeric characters
+  RegionFilter:
+    Type: String
+    Description: Should GuardDuty be enabled for all GuardDuty supported regions, or only Control Tower supported regions?
+    Default: ControlTower
+    AllowedValues:
+      - GuardDuty
+      - ControlTower
+  S3SourceBucket:
+    Type: String
+    Description: Which S3 bucket contains the gdinviter37.py.zip file for the GuardDutyEnabler lambda function?
+  ComplianceFrequency:
+    Type: Number
+    Description: How frequently (in minutes, between 1 and 3600, default is 60) should organizational compliance be checked?
+    Default: 60
+    MinValue: 1
+    MaxValue: 3600
+    ConstraintDescription: Compliance Frequency must be a number between 1 and 3600, inclusive.
+  RoleToAssume:
+    Type: String
+    Default: AWSControlTowerExecution
+    Description: What role should be assumed in child accounts to enable GuardDuty?  The default is AWSControlTowerExecution for a Control Tower Environment.
+
+Resources:
+  GuardDutyEnablerRole: 
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement: 
+          - 
+            Effect: Allow
+            Principal: 
+              Service: 
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies: 
+      - PolicyName: GuardDutyEnablerPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+              - organizations:ListAccounts
+              - organizations:DescribeAccount
+            Resource: '*'
+            Condition:
+              StringEquals:
+                "aws:PrincipalOrgId": !Sub ${OrganizationId}
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Sub arn:aws:iam::*:role/${RoleToAssume}
+            Condition:
+              StringEquals:
+                "aws:PrincipalOrgId": !Sub ${OrganizationId}
+          - Effect: Allow
+            Action: sns:Publish
+            Resource: !Ref GuardDutyEnablerTopic
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: 
+              -  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+          - Effect: Allow
+            Action: CloudFormation:ListStackInstances
+            Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stackset/AWSControlTowerBP-BASELINE-CLOUDWATCH:*
+          - Effect: Allow
+            Action: iam:GetRole
+            Resource: '*'
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Sub arn:aws:iam::*:role/${RoleToAssume}
+          - Effect: Allow
+            Action:
+              - guardduty:acceptinvitation
+              - guardduty:createdetector
+              - guardduty:createmembers
+              - guardduty:getdetector
+              - guardduty:invitemembers
+              - guardduty:listdetectors
+              - guardduty:listmembers
+              - guardduty:listinvitations
+              - guardduty:updatedetector
+            Resource: '*'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "Organizations doesn't have arns, so we have to use an asterisk in the policy"
+
+  GuardDutyEnablerLambda: 
+    DependsOn: GuardDutyEnablerRole
+    Type: AWS::Lambda::Function
+    Properties: 
+      Handler: guardduty_enabler.lambda_handler
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/${GuardDutyEnablerRole}
+      Code:
+        S3Bucket: !Ref S3SourceBucket
+        S3Key: guardduty_enabler.zip
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 300
+      Environment:
+        Variables:
+            assume_role: !Sub ${RoleToAssume}
+            region_filter: !Ref RegionFilter
+            ct_root_account: !Sub ${AWS::AccountId}
+            master_account: !Sub ${SecurityAccountId}
+            topic: !Ref GuardDutyEnablerTopic
+
+  GuardDutyEnablerTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: GuardDuty_Enabler
+      TopicName: GuardDutyEnablerTopic
+
+  GuardDutyEnablerTopicLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt GuardDutyEnablerLambda.Arn
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref GuardDutyEnablerTopic
+
+  GuardDutyEnablerSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt GuardDutyEnablerLambda.Arn
+      Protocol: lambda
+      TopicArn: !Ref GuardDutyEnablerTopic
+
+  GDScheduledRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: GuardDutyScheduledComplianceTrigger
+      ScheduleExpression: !Sub rate(${ComplianceFrequency} minutes)
+      State: ENABLED
+      Targets: 
+        - 
+          Arn: !GetAtt GuardDutyEnablerLambda.Arn
+          Id: DailyInvite
+
+  GDLifeCycleRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: GuardDutyLifeCycleTrigger
+      EventPattern:
+        source: 
+          - aws.controltower
+        detail-type: 
+          - AWS Service Event via CloudTrail
+        detail:
+          eventName:
+            - CreateManagedAccount
+      State: ENABLED
+      Targets: 
+        - 
+          Arn: !GetAtt GuardDutyEnablerLambda.Arn
+          Id: DailyInvite
+
+  GuardDutyEnablerPermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !GetAtt GuardDutyEnablerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GDScheduledRule.Arn
+
+  GuardDutyEnablerLambdaFirstRun:
+    DependsOn:
+      - GuardDutyEnablerTopic
+      - GuardDutyEnablerRole
+      - GuardDutyEnablerTopicLambdaPermission
+      - GuardDutyEnablerSubscription
+    Type: Custom::GuardDutyEnablerLambdaFirstRun
+    Properties:
+      ServiceToken: !GetAtt GuardDutyEnablerLambda.Arn

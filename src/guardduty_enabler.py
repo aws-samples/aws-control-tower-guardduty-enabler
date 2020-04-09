@@ -24,6 +24,7 @@ import json
 import os
 import time
 import logging
+import requests
 from botocore.exceptions import ClientError
 
 LOGGER = logging.getLogger()
@@ -32,6 +33,36 @@ logging.getLogger('boto3').setLevel(logging.CRITICAL)
 logging.getLogger('botocore').setLevel(logging.CRITICAL)
 
 session = boto3.Session()
+
+
+def send(
+  event, context, responseStatus, responseData,
+  physicalResourceId=None, noEcho=False):
+    responseUrl = event['ResponseURL']
+    print(responseUrl)
+    ls = context.log_stream_name
+    responseBody = {}
+    responseBody['Status'] = responseStatus
+    responseBody['Reason'] = 'See the details in CloudWatch Log Stream: ' + ls
+    responseBody['PhysicalResourceId'] = physicalResourceId or ls
+    responseBody['StackId'] = event['StackId']
+    responseBody['RequestId'] = event['RequestId']
+    responseBody['LogicalResourceId'] = event['LogicalResourceId']
+    responseBody['NoEcho'] = noEcho
+    responseBody['Data'] = responseData
+    json_responseBody = json.dumps(responseBody)
+    print("Response body:\n" + json_responseBody)
+    headers = {
+        'content-type': '',
+        'content-length': str(len(json_responseBody))
+    }
+    try:
+        response = requests.put(responseUrl,
+                                data=json_responseBody,
+                                headers=headers)
+        print("Status code: " + response.reason)
+    except Exception as e:
+        print("send(..) failed executing requests.put(..): " + str(e))
 
 
 def get_enabled_regions(session, regions):
@@ -48,14 +79,10 @@ def get_enabled_regions(session, regions):
             enabled_regions.append(region)
         except ClientError as e:
             if e.response['Error']['Code'] == "InvalidClientTokenId":
-                LOGGER.debug("%s region is disabled." % region)
+                LOGGER.debug(f"{region} region is disabled.")
             else:
-                LOGGER.debug(
-                    'Error %s occured testing region %s' % (
-                        e.response['Error'],
-                        region
-                    )
-                )
+                LOGGER.debug(f"Error {e.response['Error']} occured "
+                             f"testing region {region}")
     return enabled_regions
 
 
@@ -73,8 +100,7 @@ def get_account_list():
     while 'NextToken' in accounts:
         accountsnexttoken = accounts['NextToken']
         moreaccounts = orgclient.list_accounts(NextToken=accountsnexttoken)
-        moreaccounts['Accounts'] = accounts['Accounts'] + moreaccounts['Accounts']
-        accounts = moreaccounts
+        accounts = moreaccounts['Accounts'].append(accounts['Accounts'])
     LOGGER.debug(accounts)
     for account in accounts['Accounts']:
         LOGGER.debug(account)
@@ -95,7 +121,6 @@ def assume_role(aws_account_number, role_name):
         AWS Region for the Client call, not required for IAM calls
     :return: GuardDuty client in the specified AWS Account and Region
     """
-
     # Beginning the assume role process for account
     sts_client = boto3.client('sts')
     # Get the current partition
@@ -111,7 +136,6 @@ def assume_role(aws_account_number, role_name):
         aws_session_token=response['Credentials']['SessionToken']
     )
     LOGGER.debug(f"Assumed session for {aws_account_number}.")
-
     return sts_session
 
 
@@ -167,24 +191,103 @@ def logStatus(action, account, master, region, status):
     :param aws_region: AWS Region
     :param: GuardDuty member account status
     """
-    LOGGER.info(
-        f'{action} account {account} from GuardDuty master '
-        '{master} in region {region} because of it is'
-        '{status}'
+    LOGGER.info(f"{action} account {account} from GuardDuty master {master} "
+                f" in region {region} because of it is {status}")
+
+
+def get_ct_regions(session):
+    # This is a hack to find the control tower supported regions, as there
+    # is no API for it right now it enumerates the
+    # AWSControlTowerBP-BASELINE-CLOUDWATCH CloudFormation StackSet and finds
+    # what regions it has deployed stacks too.
+    # It doesn't have to evaluate enabled_regions as only enabled regions
+    # will/can have stacks deployed
+    cf = session.client('cloudformation')
+    stacks = cf.list_stack_instances(
+        StackSetName='AWSControlTowerBP-BASELINE-CLOUDWATCH')
+    region_set = set()
+    for stack in stacks['Summaries']:
+        region_set.add(stack['Region'])
+    return list(region_set)
+
+
+def list_members(client, detector_id):
+    member_dict = dict()
+    response = client.list_members(
+        DetectorId=detector_id,
+        OnlyAssociated='false'
     )
+    for member in response['Members']:
+        member_dict.update({member['AccountId']: member['RelationshipStatus']})
+    return member_dict
+
+
+def disable_guardduty(master_session, guardduty_regions, master_account):
+    for aws_region in guardduty_regions:
+        gd_client = master_session.client('guardduty', region_name=aws_region)
+        detector_dict = list_detectors(gd_client, aws_region)
+        detector_id = detector_dict[aws_region]
+        if detector_id != '':
+            LOGGER.info(f"GuardDuty is active in {aws_region}")
+        if detector_id != '':
+            member_dict = list_members(gd_client, detector_id)
+            if member_dict:
+                LOGGER.info(f"There are members in {aws_region}.")
+                response = gd_client.disassociate_members(
+                    AccountIds=list(member_dict.keys()),
+                    DetectorId=detector_id
+                )
+                response = gd_client.delete_members(
+                    DetectorId=detector_id,
+                    AccountIds=list(member_dict.keys())
+                )
+                LOGGER.info(f"Deleting members for {master_account} "
+                            f"in {aws_region}")
+        else:
+            LOGGER.info(f"No detector found for {master_account} "
+                        f"in {aws_region}")
 
 
 def lambda_handler(event, context):
     LOGGER.debug('REQUEST RECEIVED:\n %s', event)
     LOGGER.debug('REQUEST RECEIVED:\n %s', context)
-    session = boto3.session.Session()
     guardduty_regions = []
-    guardduty_regions = get_enabled_regions(
-        session, session.get_available_regions('guardduty')
+    master_account = os.environ['master_account']
+    master_session = assume_role(
+        master_account,
+        os.environ['assume_role']
     )
-    LOGGER.debug(
-        f"Enabling members in all available GuardDuty "
-        "regions {guardduty_regions}")
+    if os.environ['region_filter'] == 'GuardDuty':
+        guardduty_regions = get_enabled_regions(
+            session, session.get_available_regions('guardduty'))
+        LOGGER.debug(f"Enabling members in all available GuardDuty "
+                     f"regions {guardduty_regions}")
+    else:
+        guardduty_regions = get_ct_regions(session)
+        LOGGER.debug(f"Enabling members in all available ControlTower "
+                     f"regions {guardduty_regions}")
+    # Check for Custom Resource Call
+    if 'RequestType' in event and (
+            event['RequestType'] == "Delete" or
+            event['RequestType'] == "Create" or
+            event['RequestType'] == "Update"):
+        action = event['RequestType']
+        if action == "Delete":
+            disable_guardduty(
+                master_session,
+                guardduty_regions,
+                master_account
+    )
+            LOGGER.info("Sending Custom Resource Response")
+            responseData = {}
+            send(event, context, "SUCCESS", responseData)
+        if action == "Delete":
+            # Exit on delete so it doesn't re-enable existing accounts
+            raise SystemExit()
+        else:
+            LOGGER.info("Sending Custom Resource Response")
+            responseData = {}
+            send(event, context, "SUCCESS", responseData)
     master_detector_id_dict = dict()
     aws_account_dict = dict()
     # detect if the function was called by Sns
@@ -206,44 +309,35 @@ def lambda_handler(event, context):
         for accountid, email in aws_account_dict.items():
             # sns is used to fan out the requests, as too many accounts
             # would result in the function timing out
-            LOGGER.debug("Sending job to configure account %s" % accountid)
+            LOGGER.debug(f"Sending job to configure account {accountid}")
             response = sns_client.publish(
                 TopicArn=os.environ['topic'],
                 Message="{\"AccountId\":\""+accountid+"\","
                 "\"Email\":\""+email+"\"}"
             )
-        return(True)
-    master_account = os.environ['master_account']
-    master_session = assume_role(
-        master_account,
-        os.environ['assume_role']
-    )
+        return True
     for aws_region in guardduty_regions:
         gd_client = master_session.client('guardduty', region_name=aws_region)
         detector_dict = list_detectors(gd_client, aws_region)
         if detector_dict[aws_region]:
-            LOGGER.debug(
-                f"Found existing detector {detector_dict[aws_region]} "
-                "in {aws_region} for {master_account}"
-            )
+            LOGGER.debug(f"Found existing detector {detector_dict[aws_region]}"
+                         f" in {aws_region} for {master_account}")
             master_detector_id_dict.update(
                 {aws_region: detector_dict[aws_region]}
             )
         else:
             detector_str = gd_client.create_detector(Enable=True)['DetectorId']
-            LOGGER.info(
-                f"Created detector {detector_str} in {aws_region} "
-                "for {master_account}"
-            )
+            LOGGER.info(f"Created detector {detector_str} in {aws_region} "
+                        f"for {master_account}")
             master_detector_id_dict.update({aws_region: detector_str})
     failed_accounts = []
     for account in aws_account_dict.keys():
-        if (account != os.environ['ct_root_account']):
+        if account != os.environ['ct_root_account']:
             target_session = assume_role(account, os.environ['assume_role'])
         else:
             target_session = session
         for aws_region in guardduty_regions:
-            LOGGER.debug(f'Beginning {account} in {aws_region}')
+            LOGGER.debug(f"Beginning {account} in {aws_region}")
             gd_client = target_session.client(
                 'guardduty',
                 region_name=aws_region
@@ -251,9 +345,8 @@ def lambda_handler(event, context):
             detector_dict = list_detectors(gd_client, aws_region)
             detector_id = detector_dict[aws_region]
             if detector_id:
-                LOGGER.debug(
-                    f'Found existing detector {detector_id} in {aws_region} '
-                    'for {account}')
+                LOGGER.debug(f"Found existing detector {detector_id} in "
+                             f"{aws_region} for {account}")
                 try:
                     detector_status = gd_client.get_detector(
                         DetectorId=detector_id
@@ -266,10 +359,9 @@ def lambda_handler(event, context):
                                 detector_status['FindingPublishingFrequency']
                             )
                         )
-                        LOGGER.warning(
-                            f'Renabled disabled detector {detector_id} in '
-                            '{ws_region} for {account} with {update_result}'
-                        )
+                        LOGGER.warning(f"Re-enabled disabled detector "
+                                       f"{detector_id} in {aws_region} for "
+                                       f"{account} with {update_result}")
                 except ClientError as e:
                     LOGGER.debug(f"Error Processing Account {account}")
                     failed_accounts.append({
@@ -278,9 +370,8 @@ def lambda_handler(event, context):
             else:
                 detector_str = \
                     gd_client.create_detector(Enable=True)['DetectorId']
-                LOGGER.info(
-                    f'Created detector {detector_str} in {aws_region} for '
-                    '{account}')
+                LOGGER.info(f"Created detector {detector_str} in "
+                            f"{aws_region} for {account}")
                 detector_id = detector_str
             master_detector_id = master_detector_id_dict[aws_region]
             member_dict = get_master_members(
@@ -303,18 +394,14 @@ def lambda_handler(event, context):
                     ],
                     DetectorId=master_detector_id
                 )
-                LOGGER.info(
-                    f"Added Account {account} to member list in "
-                    "GuardDuty master account {master_account} "
-                    "for region {aws_region}"
-                )
+                LOGGER.info(f"Added Account {account} to member list "
+                            f"in GuardDuty master account {master_account} "
+                            f"for region {aws_region}")
                 start_time = int(time.time())
                 while account not in member_dict:
                     if (int(time.time()) - start_time) > 300:
-                        LOGGER.debug(
-                            f'Membership did not show up for account '
-                            '{account}, skipping'
-                        )
+                        LOGGER.debug(f"Membership did not show up for "
+                                     f"account {account}, skipping")
                         break
                     time.sleep(5)
                     member_dict = get_master_members(
@@ -323,16 +410,12 @@ def lambda_handler(event, context):
                         master_detector_id
                     )
             else:
-                LOGGER.debug(
-                    f"Account {account} is already a member of "
-                    "{master_account} in region {aws_region}"
-                )
-
-            if (account != master_account):
+                LOGGER.debug(f"Account {account} is already a member of "
+                             f"{master_account} in region {aws_region}")
+            if account != master_account:
                 if member_dict[account] == 'Enabled':
-                    LOGGER.debug(
-                        f'Account {account} is already {member_dict[account]}'
-                    )
+                    LOGGER.debug(f"Account {account} is already "
+                                 f"{member_dict[account]}")
                 else:
                     master_gd_client = master_session.client(
                         'guardduty',
@@ -345,10 +428,8 @@ def lambda_handler(event, context):
                     start_time = int(time.time())
                     while member_dict[account] != 'Enabled':
                         if (int(time.time()) - start_time) > 300:
-                            LOGGER.debug(
-                                f'Enabled status did not show up for '
-                                'account {account}, skipping'
-                            )
+                            LOGGER.debug(f"Enabled status did not show up "
+                                         f"for account {account}, skipping")
                             break
                         time.sleep(5)
                         if member_dict[account] == 'Created':
@@ -360,11 +441,10 @@ def lambda_handler(event, context):
                                 DetectorId=master_detector_id,
                                 DisableEmailNotification=True
                             )
-                            LOGGER.info(
-                                f"Invited Account {account} to GuardDuty "
-                                "master account {master_account} "
-                                "in region {aws_region}"
-                            )
+                            LOGGER.info(f"Invited Account {account} to "
+                                        f"GuardDuty master account "
+                                        f"{master_account} in "
+                                        f"region {aws_region}")
                         elif member_dict[account] == 'Invited':
                             response = gd_client.list_invitations()
                             invitation_id = None
@@ -376,40 +456,61 @@ def lambda_handler(event, context):
                                     InvitationId=invitation_id,
                                     MasterId=str(master_account)
                                 )
-                                LOGGER.info(
-                                    f"Accepting Account {account} to "
-                                    "GuardDuty master account "
-                                    "{master_account} "
-                                    "in region {aws_region}"
-                                )
+                                LOGGER.info(f"Accepting Account {account} to "
+                                            f"GuardDuty master account "
+                                            f"{master_account} in "
+                                            f"region {aws_region}")
                         elif member_dict[account] == 'Resigned':
                             response = master_gd_client.delete_members(
                                 DetectorId=master_detector_id,
                                 AccountIds=[account]
                             )
-                            logStatus("Removing", account, master_account, aws_region, member_dict[account])
+                            logStatus(
+                                "Removing",
+                                account,
+                                master_account,
+                                aws_region,
+                                member_dict[account]
+                            )
                         elif member_dict[account] == 'Disabled':
                             response = master_gd_client.disassociate_members(
                                 DetectorId=master_detector_id,
                                 AccountIds=[account]
                             )
-                            logStatus("Disassociating", account, master_account, aws_region, member_dict[account])
+                            logStatus(
+                                "Disassociating",
+                                account,
+                                master_account,
+                                aws_region,
+                                member_dict[account]
+                            )
                         elif member_dict[account] == 'Removed':
                             response = master_gd_client.delete_members(
                                 DetectorId=master_detector_id,
                                 AccountIds=[account]
                             )
-                            logStatus("Removing", account, master_account, aws_region, member_dict[account])
+                            logStatus(
+                                "Removing",
+                                account,
+                                master_account,
+                                aws_region,
+                                member_dict[account]
+                            )
                         else:
-                            logStatus("Waiting", account, master_account, aws_region, member_dict[account])
+                            logStatus(
+                                "Waiting",
+                                account,
+                                master_account,
+                                aws_region,
+                                member_dict[account]
+                            )
                         member_dict = get_master_members(
                             master_session,
                             aws_region,
                             master_detector_id
                         )
-                    LOGGER.debug(
-                        f'Finished {account} in {aws_region}'
-                    )
+                    LOGGER.debug(f"Finished {account} in {aws_region}")
+
     if len(failed_accounts) > 0:
         LOGGER.info("Error Processing following accounts: %s" % (
             json.dumps(failed_accounts, sort_keys=True, default=str)))
