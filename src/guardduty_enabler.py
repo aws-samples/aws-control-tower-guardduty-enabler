@@ -95,7 +95,7 @@ def get_account_list():
     like new regions being added or GuardDuty being disabled.
     """
     aws_account_dict = dict()
-    orgclient = session.client('organizations', region_name='us-east-1')
+    orgclient = session.client('organizations', region_name=session.region_name)
     accounts = orgclient.list_accounts()
     while 'NextToken' in accounts:
         accountsnexttoken = accounts['NextToken']
