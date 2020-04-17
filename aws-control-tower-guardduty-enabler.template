@@ -66,7 +66,7 @@ Resources:
                 "aws:PrincipalOrgId": !Sub ${OrganizationId}
           - Effect: Allow
             Action: sts:AssumeRole
-            Resource: !Sub arn:aws:iam::*:role/${RoleToAssume}
+            Resource: !Sub arn:${AWS::Partition}:iam::*:role/${RoleToAssume}
             Condition:
               StringEquals:
                 "aws:PrincipalOrgId": !Sub ${OrganizationId}
@@ -79,16 +79,16 @@ Resources:
               - logs:CreateLogStream
               - logs:PutLogEvents
             Resource: 
-              -  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+              -  !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
           - Effect: Allow
             Action: CloudFormation:ListStackInstances
-            Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stackset/AWSControlTowerBP-BASELINE-CLOUDWATCH:*
+            Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stackset/AWSControlTowerBP-BASELINE-CLOUDWATCH:*
           - Effect: Allow
             Action: iam:GetRole
             Resource: '*'
           - Effect: Allow
             Action: sts:AssumeRole
-            Resource: !Sub arn:aws:iam::*:role/${RoleToAssume}
+            Resource: !Sub arn:${AWS::Partition}:iam::*:role/${RoleToAssume}
           - Effect: Allow
             Action:
               - guardduty:acceptinvitation
@@ -112,7 +112,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties: 
       Handler: guardduty_enabler.lambda_handler
-      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/${GuardDutyEnablerRole}
+      Role: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${GuardDutyEnablerRole}
       Code:
         S3Bucket: !Ref S3SourceBucket
         S3Key: guardduty_enabler.zip
