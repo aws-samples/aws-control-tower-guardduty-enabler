@@ -259,7 +259,7 @@ def lambda_handler(event, context):
     )
     if os.environ['region_filter'] == 'GuardDuty':
         guardduty_regions = get_enabled_regions(
-            session, session.get_available_regions('guardduty'))
+            session, session.get_available_regions('guardduty',partition_name=os.environ['topic'].split(":")[1]))
         LOGGER.debug(f"Enabling members in all available GuardDuty "
                      f"regions {guardduty_regions}")
     else:
