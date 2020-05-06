@@ -95,8 +95,7 @@ def get_account_list():
     like new regions being added or GuardDuty being disabled.
     """
     aws_account_dict = dict()
-    # orgclient = session.client('organizations', region_name=session.region_name)
-    orgclient = boto3.client('organizations')
+    orgclient = session.client('organizations', region_name=session.region_name)
     accounts = orgclient.list_accounts()
 
     all_accounts = accounts['Accounts']
