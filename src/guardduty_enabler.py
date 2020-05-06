@@ -95,14 +95,18 @@ def get_account_list():
     like new regions being added or GuardDuty being disabled.
     """
     aws_account_dict = dict()
-    orgclient = session.client('organizations', region_name=session.region_name)
+    # orgclient = session.client('organizations', region_name=session.region_name)
+    orgclient = boto3.client('organizations')
     accounts = orgclient.list_accounts()
+
+    all_accounts = accounts['Accounts']
     while 'NextToken' in accounts:
         accountsnexttoken = accounts['NextToken']
-        moreaccounts = orgclient.list_accounts(NextToken=accountsnexttoken)
-        accounts = moreaccounts['Accounts'].append(accounts['Accounts'])
-    LOGGER.debug(accounts)
-    for account in accounts['Accounts']:
+        accounts = orgclient.list_accounts(NextToken=accountsnexttoken)
+        all_accounts.extend(accounts['Accounts'])
+
+    LOGGER.debug(all_accounts)
+    for account in all_accounts:
         LOGGER.debug(account)
         # Filter out suspended accounts and save valid accounts in a dict
         if account['Status'] == 'ACTIVE':
