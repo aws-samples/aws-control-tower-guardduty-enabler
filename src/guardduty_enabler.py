@@ -98,9 +98,10 @@ def get_account_list():
     orgclient = session.client('organizations', region_name=session.region_name)
     accounts = orgclient.list_accounts()
     while 'NextToken' in accounts:
-        accountsnexttoken = accounts['NextToken']
-        moreaccounts = orgclient.list_accounts(NextToken=accountsnexttoken)
-        accounts = moreaccounts['Accounts'].append(accounts['Accounts'])
+        moreaccounts = orgclient.list_accounts(NextToken=accounts['NextToken'])
+        for acct in accounts['Accounts']:
+            moreaccounts['Accounts'].append(acct)
+        accounts = moreaccounts
     LOGGER.debug(accounts)
     for account in accounts['Accounts']:
         LOGGER.debug(account)
