@@ -26,6 +26,10 @@ Parameters:
   S3SourceBucket:
     Type: String
     Description: Which S3 bucket contains the gdinviter37.py.zip file for the GuardDutyEnabler lambda function?
+  S3SourceFile:
+    Type: String
+    Description: What is the S3 path to the zip file for the GuardDutyEnabler lambda function?
+    Default: gdinviter37.py.zip
   ComplianceFrequency:
     Type: Number
     Description: How frequently (in minutes, between 1 and 3600, default is 60) should organizational compliance be checked?
@@ -115,7 +119,7 @@ Resources:
       Role: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${GuardDutyEnablerRole}
       Code:
         S3Bucket: !Ref S3SourceBucket
-        S3Key: guardduty_enabler.zip
+        S3Key: !Ref S3SourceFile
       Runtime: python3.7
       MemorySize: 128
       Timeout: 300
