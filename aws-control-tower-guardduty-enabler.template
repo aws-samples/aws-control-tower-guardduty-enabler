@@ -185,6 +185,14 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt GDScheduledRule.Arn
 
+  GuardDutyEnablerPermissionForLifecycleEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !GetAtt GuardDutyEnablerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GDLifeCycleRule.Arn
+
   GuardDutyEnablerLambdaFirstRun:
     DependsOn:
       - GuardDutyEnablerTopic
