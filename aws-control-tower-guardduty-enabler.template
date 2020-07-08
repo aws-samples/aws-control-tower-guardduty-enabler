@@ -4,7 +4,7 @@ Description: Creates an SNS topic and Lambda function used to enable GuardDuty a
 Parameters:
   SecurityAccountId:
     Type: String
-    Description: Which account will be the GuardDuty Master?  Enter the AWS account ID. (This is generally the AWS Control Tower Audit account)
+    Description: Which account will be the GuardDuty Admin?  Enter the AWS account ID. (This is generally the AWS Control Tower Audit account)
     AllowedPattern: '^[0-9]{12}$'
     ConstraintDescription: The Security Account ID must be a 12 character string.
     MinLength: 12
@@ -128,7 +128,7 @@ Resources:
             assume_role: !Sub ${RoleToAssume}
             region_filter: !Ref RegionFilter
             ct_root_account: !Sub ${AWS::AccountId}
-            master_account: !Sub ${SecurityAccountId}
+            admin_account: !Sub ${SecurityAccountId}
             topic: !Ref GuardDutyEnablerTopic
 
   GuardDutyEnablerTopic:
