@@ -15,7 +15,7 @@ specific language governing permissions and limitations under the License.
 This script orchestrates the enablement and centralization of GuardDuty
 across an enterprise of AWS accounts. It takes in a list of AWS Account
 Numbers, iterates through each account and region to enable GuardDuty.
-It creates each account as a Member in the GuardDuty Master account.
+It creates each account as a Member in the GuardDuty Admin account.
 It invites and accepts the invite for each Member account.
 """
 
@@ -140,16 +140,16 @@ def assume_role(aws_account_number, role_name):
     return sts_session
 
 
-def get_master_members(master_session, aws_region, detector_id):
+def get_admin_members(admin_session, aws_region, detector_id):
     """
-    Returns a list of current members of the GuardDuty master account
-    :param aws_region: AWS Region of the GuardDuty master account
+    Returns a list of current members of the GuardDuty admin account
+    :param aws_region: AWS Region of the GuardDuty admin account
     :param detector_id:
-        DetectorId of the GuardDuty master account in the AWS Region
+        DetectorId of the GuardDuty admin account in the AWS Region
     :return: dict of AwsAccountId:RelationshipStatus
     """
     member_dict = dict()
-    gd_client = master_session.client('guardduty', region_name=aws_region)
+    gd_client = admin_session.client('guardduty', region_name=aws_region)
     paginator = gd_client.get_paginator('list_members')
     operation_parameters = {
         'DetectorId': detector_id,
@@ -183,16 +183,16 @@ def list_detectors(client, aws_region):
     return detector_dict
 
 
-def logStatus(action, account, master, region, status):
+def logStatus(action, account, admin, region, status):
     """
     Log status of each member account
     :param action: action on the account, such as Removing or Disassociating
     :param account: GuardDuty member account
-    :parm master: GuardDuty master account
+    :parm admin: GuardDuty admin account
     :param aws_region: AWS Region
     :param: GuardDuty member account status
     """
-    LOGGER.info(f"{action} account {account} from GuardDuty master {master} "
+    LOGGER.info(f"{action} account {account} from GuardDuty admin {admin} "
                 f" in region {region} because of it is {status}")
 
 
@@ -223,9 +223,9 @@ def list_members(client, detector_id):
     return member_dict
 
 
-def disable_guardduty(master_session, guardduty_regions, master_account):
+def disable_guardduty(admin_session, guardduty_regions, admin_account):
     for aws_region in guardduty_regions:
-        gd_client = master_session.client('guardduty', region_name=aws_region)
+        gd_client = admin_session.client('guardduty', region_name=aws_region)
         detector_dict = list_detectors(gd_client, aws_region)
         detector_id = detector_dict[aws_region]
         if detector_id != '':
@@ -242,10 +242,10 @@ def disable_guardduty(master_session, guardduty_regions, master_account):
                     DetectorId=detector_id,
                     AccountIds=list(member_dict.keys())
                 )
-                LOGGER.info(f"Deleting members for {master_account} "
+                LOGGER.info(f"Deleting members for {admin_account} "
                             f"in {aws_region}")
         else:
-            LOGGER.info(f"No detector found for {master_account} "
+            LOGGER.info(f"No detector found for {admin_account} "
                         f"in {aws_region}")
 
 
@@ -253,9 +253,9 @@ def lambda_handler(event, context):
     LOGGER.debug('REQUEST RECEIVED:\n %s', event)
     LOGGER.debug('REQUEST RECEIVED:\n %s', context)
     guardduty_regions = []
-    master_account = os.environ['master_account']
-    master_session = assume_role(
-        master_account,
+    admin_account = os.environ['admin_account']
+    admin_session = assume_role(
+        admin_account,
         os.environ['assume_role']
     )
     if os.environ['region_filter'] == 'GuardDuty':
@@ -275,9 +275,9 @@ def lambda_handler(event, context):
         action = event['RequestType']
         if action == "Delete":
             disable_guardduty(
-                master_session,
+                admin_session,
                 guardduty_regions,
-                master_account
+                admin_account
     )
             LOGGER.info("Sending Custom Resource Response")
             responseData = {}
@@ -289,7 +289,7 @@ def lambda_handler(event, context):
             LOGGER.info("Sending Custom Resource Response")
             responseData = {}
             send(event, context, "SUCCESS", responseData)
-    master_detector_id_dict = dict()
+    admin_detector_id_dict = dict()
     aws_account_dict = dict()
     # detect if the function was called by Sns
     if 'Records' in event:
@@ -318,19 +318,19 @@ def lambda_handler(event, context):
             )
         return True
     for aws_region in guardduty_regions:
-        gd_client = master_session.client('guardduty', region_name=aws_region)
+        gd_client = admin_session.client('guardduty', region_name=aws_region)
         detector_dict = list_detectors(gd_client, aws_region)
         if detector_dict[aws_region]:
             LOGGER.debug(f"Found existing detector {detector_dict[aws_region]}"
-                         f" in {aws_region} for {master_account}")
-            master_detector_id_dict.update(
+                         f" in {aws_region} for {admin_account}")
+            admin_detector_id_dict.update(
                 {aws_region: detector_dict[aws_region]}
             )
         else:
             detector_str = gd_client.create_detector(Enable=True)['DetectorId']
             LOGGER.info(f"Created detector {detector_str} in {aws_region} "
-                        f"for {master_account}")
-            master_detector_id_dict.update({aws_region: detector_str})
+                        f"for {admin_account}")
+            admin_detector_id_dict.update({aws_region: detector_str})
     failed_accounts = []
     for account in aws_account_dict.keys():
         if account != os.environ['ct_root_account']:
@@ -374,15 +374,15 @@ def lambda_handler(event, context):
                 LOGGER.info(f"Created detector {detector_str} in "
                             f"{aws_region} for {account}")
                 detector_id = detector_str
-            master_detector_id = master_detector_id_dict[aws_region]
-            member_dict = get_master_members(
-                master_session,
+            admin_detector_id = admin_detector_id_dict[aws_region]
+            member_dict = get_admin_members(
+                admin_session,
                 aws_region,
-                master_detector_id
+                admin_detector_id
             )
             if ((account not in member_dict) and
-                    (account != master_account)):
-                gd_client = master_session.client(
+                    (account != admin_account)):
+                gd_client = admin_session.client(
                     'guardduty',
                     region_name=aws_region
                 )
@@ -393,10 +393,10 @@ def lambda_handler(event, context):
                             'Email': aws_account_dict[account]
                         }
                     ],
-                    DetectorId=master_detector_id
+                    DetectorId=admin_detector_id
                 )
                 LOGGER.info(f"Added Account {account} to member list "
-                            f"in GuardDuty master account {master_account} "
+                            f"in GuardDuty admin account {admin_account} "
                             f"for region {aws_region}")
                 start_time = int(time.time())
                 while account not in member_dict:
@@ -405,20 +405,20 @@ def lambda_handler(event, context):
                                      f"account {account}, skipping")
                         break
                     time.sleep(5)
-                    member_dict = get_master_members(
-                        master_session,
+                    member_dict = get_admin_members(
+                        admin_session,
                         aws_region,
-                        master_detector_id
+                        admin_detector_id
                     )
             else:
                 LOGGER.debug(f"Account {account} is already a member of "
-                             f"{master_account} in region {aws_region}")
-            if account != master_account:
+                             f"{admin_account} in region {aws_region}")
+            if account != admin_account:
                 if member_dict[account] == 'Enabled':
                     LOGGER.debug(f"Account {account} is already "
                                  f"{member_dict[account]}")
                 else:
-                    master_gd_client = master_session.client(
+                    admin_gd_client = admin_session.client(
                         'guardduty',
                         region_name=aws_region
                     )
@@ -434,17 +434,17 @@ def lambda_handler(event, context):
                             break
                         time.sleep(5)
                         if member_dict[account] == 'Created':
-                            master_gd_client = master_session.client(
+                            admin_gd_client = admin_session.client(
                                 'guardduty', region_name=aws_region
                             )
-                            master_gd_client.invite_members(
+                            admin_gd_client.invite_members(
                                 AccountIds=[account],
-                                DetectorId=master_detector_id,
+                                DetectorId=admin_detector_id,
                                 DisableEmailNotification=True
                             )
                             LOGGER.info(f"Invited Account {account} to "
-                                        f"GuardDuty master account "
-                                        f"{master_account} in "
+                                        f"GuardDuty admin account "
+                                        f"{admin_account} in "
                                         f"region {aws_region}")
                         elif member_dict[account] == 'Invited':
                             response = gd_client.list_invitations()
@@ -455,45 +455,45 @@ def lambda_handler(event, context):
                                 gd_client.accept_invitation(
                                     DetectorId=detector_id,
                                     InvitationId=invitation_id,
-                                    MasterId=str(master_account)
+                                    AdminId=str(admin_account)
                                 )
                                 LOGGER.info(f"Accepting Account {account} to "
-                                            f"GuardDuty master account "
-                                            f"{master_account} in "
+                                            f"GuardDuty admin account "
+                                            f"{admin_account} in "
                                             f"region {aws_region}")
                         elif member_dict[account] == 'Resigned':
-                            response = master_gd_client.delete_members(
-                                DetectorId=master_detector_id,
+                            response = admin_gd_client.delete_members(
+                                DetectorId=admin_detector_id,
                                 AccountIds=[account]
                             )
                             logStatus(
                                 "Removing",
                                 account,
-                                master_account,
+                                admin_account,
                                 aws_region,
                                 member_dict[account]
                             )
                         elif member_dict[account] == 'Disabled':
-                            response = master_gd_client.disassociate_members(
-                                DetectorId=master_detector_id,
+                            response = admin_gd_client.disassociate_members(
+                                DetectorId=admin_detector_id,
                                 AccountIds=[account]
                             )
                             logStatus(
                                 "Disassociating",
                                 account,
-                                master_account,
+                                admin_account,
                                 aws_region,
                                 member_dict[account]
                             )
                         elif member_dict[account] == 'Removed':
-                            response = master_gd_client.delete_members(
-                                DetectorId=master_detector_id,
+                            response = admin_gd_client.delete_members(
+                                DetectorId=admin_detector_id,
                                 AccountIds=[account]
                             )
                             logStatus(
                                 "Removing",
                                 account,
-                                master_account,
+                                admin_account,
                                 aws_region,
                                 member_dict[account]
                             )
@@ -501,14 +501,14 @@ def lambda_handler(event, context):
                             logStatus(
                                 "Waiting",
                                 account,
-                                master_account,
+                                admin_account,
                                 aws_region,
                                 member_dict[account]
                             )
-                        member_dict = get_master_members(
-                            master_session,
+                        member_dict = get_admin_members(
+                            admin_session,
                             aws_region,
-                            master_detector_id
+                            admin_detector_id
                         )
                     LOGGER.debug(f"Finished {account} in {aws_region}")
 
