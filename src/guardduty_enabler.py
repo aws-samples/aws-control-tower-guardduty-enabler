@@ -455,7 +455,7 @@ def lambda_handler(event, context):
                                 gd_client.accept_invitation(
                                     DetectorId=detector_id,
                                     InvitationId=invitation_id,
-                                    AdminId=str(admin_account)
+                                    MasterId=str(admin_account)
                                 )
                                 LOGGER.info(f"Accepting Account {account} to "
                                             f"GuardDuty admin account "
