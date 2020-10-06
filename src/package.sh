@@ -10,13 +10,13 @@ SCRIPT_DIRECTORY="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pw
 pushd $SCRIPT_DIRECTORY > /dev/null
  
 rm -rf .package guardduty_enabler.zip
-mkdir .package
+#mkdir .package
  
-pip3 install --target .package --requirement requirements.txt
+# pip3 install --target .package --requirement requirements.txt
  
-pushd .package > /dev/null
-zip --recurse-paths ${SCRIPT_DIRECTORY}/guardduty_enabler.zip .
-popd > /dev/null
+#pushd .package > /dev/null
+#zip --recurse-paths ${SCRIPT_DIRECTORY}/guardduty_enabler.zip .
+#popd > /dev/null
  
 zip --grow  guardduty_enabler.zip guardduty_enabler.py
  
