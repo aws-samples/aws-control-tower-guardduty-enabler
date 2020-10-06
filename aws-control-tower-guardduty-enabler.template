@@ -88,7 +88,9 @@ Resources:
             Action: CloudFormation:ListStackInstances
             Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stackset/AWSControlTowerBP-BASELINE-CLOUDWATCH:*
           - Effect: Allow
-            Action: iam:GetRole
+            Action: 
+              - iam:GetRole
+              - iam:CreateServiceLinkedRole
             Resource: '*'
           - Effect: Allow
             Action: sts:AssumeRole
@@ -130,6 +132,7 @@ Resources:
             ct_root_account: !Sub ${AWS::AccountId}
             admin_account: !Sub ${SecurityAccountId}
             topic: !Ref GuardDutyEnablerTopic
+            log_level: "ERROR"
 
   GuardDutyEnablerTopic:
     Type: AWS::SNS::Topic

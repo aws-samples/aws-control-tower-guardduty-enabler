@@ -24,11 +24,15 @@ import json
 import os
 import time
 import logging
-import requests
+import urllib3
 from botocore.exceptions import ClientError
 
 LOGGER = logging.getLogger()
-LOGGER.setLevel(logging.INFO)
+if 'log_level' in os.environ:
+    LOGGER.setLevel(os.environ['log_level'])
+    LOGGER.info("Log level set to %s" % LOGGER.getEffectiveLevel())
+else:
+    LOGGER.setLevel(logging.ERROR)
 logging.getLogger('boto3').setLevel(logging.CRITICAL)
 logging.getLogger('botocore').setLevel(logging.CRITICAL)
 
@@ -38,8 +42,8 @@ session = boto3.Session()
 def send(
   event, context, responseStatus, responseData,
   physicalResourceId=None, noEcho=False):
-    responseUrl = event['ResponseURL']
-    print(responseUrl)
+    response_url = event['ResponseURL']
+    print(response_url)
     ls = context.log_stream_name
     responseBody = {}
     responseBody['Status'] = responseStatus
@@ -50,15 +54,17 @@ def send(
     responseBody['LogicalResourceId'] = event['LogicalResourceId']
     responseBody['NoEcho'] = noEcho
     responseBody['Data'] = responseData
-    json_responseBody = json.dumps(responseBody)
-    print("Response body:\n" + json_responseBody)
+    json_response_body = json.dumps(responseBody)
+    print("Response body:\n" + json_response_body)
     headers = {
         'content-type': '',
-        'content-length': str(len(json_responseBody))
+        'content-length': str(len(json_response_body))
     }
+    http = urllib3.PoolManager()
     try:
-        response = requests.put(responseUrl,
-                                data=json_responseBody,
+        response = http.request('PUT',
+                                response_url,
+                                body=json_response_body,
                                 headers=headers)
         print("Status code: " + response.reason)
     except Exception as e:
@@ -427,13 +433,19 @@ def lambda_handler(event, context):
                         region_name=aws_region
                     )
                     start_time = int(time.time())
-                    while member_dict[account] != 'Enabled':
+                    member_dict = get_admin_members(
+                        admin_session,
+                        aws_region,
+                        admin_detector_id
+                    )
+                    while (account not in member_dict) or (member_dict[account] != 'Enabled'):
                         if (int(time.time()) - start_time) > 300:
                             LOGGER.debug(f"Enabled status did not show up "
                                          f"for account {account}, skipping")
                             break
-                        time.sleep(5)
-                        if member_dict[account] == 'Created':
+                        if account not in member_dict:
+                            member_dict[account] = "missing"
+                        if (account in member_dict) and (member_dict[account] == 'Created'):
                             admin_gd_client = admin_session.client(
                                 'guardduty', region_name=aws_region
                             )
@@ -446,7 +458,7 @@ def lambda_handler(event, context):
                                         f"GuardDuty admin account "
                                         f"{admin_account} in "
                                         f"region {aws_region}")
-                        elif member_dict[account] == 'Invited':
+                        elif (account in member_dict) and (member_dict[account] == 'Invited'):
                             response = gd_client.list_invitations()
                             invitation_id = None
                             for invitation in response['Invitations']:
@@ -461,7 +473,7 @@ def lambda_handler(event, context):
                                             f"GuardDuty admin account "
                                             f"{admin_account} in "
                                             f"region {aws_region}")
-                        elif member_dict[account] == 'Resigned':
+                        elif (account in member_dict) and (member_dict[account] == 'Resigned'):
                             response = admin_gd_client.delete_members(
                                 DetectorId=admin_detector_id,
                                 AccountIds=[account]
@@ -473,7 +485,7 @@ def lambda_handler(event, context):
                                 aws_region,
                                 member_dict[account]
                             )
-                        elif member_dict[account] == 'Disabled':
+                        elif (account in member_dict) and (member_dict[account] == 'Disabled'):
                             response = admin_gd_client.disassociate_members(
                                 DetectorId=admin_detector_id,
                                 AccountIds=[account]
@@ -485,7 +497,7 @@ def lambda_handler(event, context):
                                 aws_region,
                                 member_dict[account]
                             )
-                        elif member_dict[account] == 'Removed':
+                        elif (account in member_dict) and (member_dict[account] == 'Removed'):
                             response = admin_gd_client.delete_members(
                                 DetectorId=admin_detector_id,
                                 AccountIds=[account]
@@ -505,6 +517,7 @@ def lambda_handler(event, context):
                                 aws_region,
                                 member_dict[account]
                             )
+                        time.sleep(5)
                         member_dict = get_admin_members(
                             admin_session,
                             aws_region,
