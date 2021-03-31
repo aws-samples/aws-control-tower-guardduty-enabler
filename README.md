@@ -1,6 +1,6 @@
 ## Centralize AWS GuardDuty
 
-Installing this Customization will enable GuardDuty in all AWS Control Tower managed accounts, with the Audit account acting as the default GuardDuty Admin account.
+Installing this Customization will enable GuardDuty in all AWS Control Tower managed accounts, with the management delegated to a security account.
 
 This is done by deploying a GuardDuty Enabler lambda function in the Control Tower root account. It runs periodically and checks each Control Tower managed account/region to ensure that they have been invited into the GuardDuty Admin account and that GuardDuty is enabled.
 
