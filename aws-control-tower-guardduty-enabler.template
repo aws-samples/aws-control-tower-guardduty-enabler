@@ -4,7 +4,7 @@ Description: Creates an SNS topic and Lambda function used to enable GuardDuty a
 Parameters:
   SecurityAccountId:
     Type: String
-    Description: Which account will be the GuardDuty Admin?  Enter the AWS account ID. (This is generally the AWS Control Tower Audit account)
+    Description: Which account will be the GuardDuty Admin?  Enter the AWS account ID.
     AllowedPattern: '^[0-9]{12}$'
     ConstraintDescription: The Security Account ID must be a 12 character string.
     MinLength: 12
@@ -19,7 +19,7 @@ Parameters:
   RegionFilter:
     Type: String
     Description: Should GuardDuty be enabled for all GuardDuty supported regions, or only Control Tower supported regions?
-    Default: ControlTower
+    Default: GuardDuty
     AllowedValues:
       - GuardDuty
       - ControlTower
@@ -32,8 +32,8 @@ Parameters:
     Default: guardduty_enabler.zip
   ComplianceFrequency:
     Type: Number
-    Description: How frequently (in minutes, between 1 and 3600, default is 60) should organizational compliance be checked?
-    Default: 60
+    Description: How frequently (in minutes, between 1 and 3600, default is 1440 - 24hrs) should organizational compliance be checked?
+    Default: 1440
     MinValue: 1
     MaxValue: 3600
     ConstraintDescription: Compliance Frequency must be a number between 1 and 3600, inclusive.
