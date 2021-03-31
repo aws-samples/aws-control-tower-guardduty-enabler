@@ -32,8 +32,8 @@ Parameters:
     Default: guardduty_enabler.zip
   ComplianceFrequency:
     Type: Number
-    Description: How frequently (in minutes, between 1 and 3600, default is 1440 - 24hrs) should organizational compliance be checked?
-    Default: 1440
+    Description: How frequently (in minutes, between 1 and 3600, default is 60) should organizational compliance be checked?
+    Default: 60
     MinValue: 1
     MaxValue: 3600
     ConstraintDescription: Compliance Frequency must be a number between 1 and 3600, inclusive.
