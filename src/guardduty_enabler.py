@@ -25,6 +25,7 @@ import os
 import time
 import logging
 import urllib3
+import cfnresponse
 from botocore.exceptions import ClientError
 
 LOGGER = logging.getLogger()
@@ -256,275 +257,279 @@ def disable_guardduty(admin_session, guardduty_regions, admin_account):
 
 
 def lambda_handler(event, context):
-    LOGGER.debug('REQUEST RECEIVED:\n %s', event)
-    LOGGER.debug('REQUEST RECEIVED:\n %s', context)
-    guardduty_regions = []
-    admin_account = os.environ['admin_account']
-    admin_session = assume_role(
-        admin_account,
-        os.environ['assume_role']
-    )
-    if os.environ['region_filter'] == 'GuardDuty':
-        guardduty_regions = get_enabled_regions(
-            session, session.get_available_regions('guardduty',partition_name=os.environ['topic'].split(":")[1]))
-        LOGGER.debug(f"Enabling members in all available GuardDuty "
-                     f"regions {guardduty_regions}")
-    else:
-        guardduty_regions = get_ct_regions(session)
-        LOGGER.debug(f"Enabling members in all available ControlTower "
-                     f"regions {guardduty_regions}")
-    # Check for Custom Resource Call
-    if 'RequestType' in event and (
-            event['RequestType'] == "Delete" or
-            event['RequestType'] == "Create" or
-            event['RequestType'] == "Update"):
-        action = event['RequestType']
-        if action == "Delete":
-            disable_guardduty(
-                admin_session,
-                guardduty_regions,
-                admin_account
-    )
-            LOGGER.info("Sending Custom Resource Response")
-            responseData = {}
-            send(event, context, "SUCCESS", responseData)
-        if action == "Delete":
-            # Exit on delete so it doesn't re-enable existing accounts
-            raise SystemExit()
-        else:
-            LOGGER.info("Sending Custom Resource Response")
-            responseData = {}
-            send(event, context, "SUCCESS", responseData)
-    admin_detector_id_dict = dict()
-    aws_account_dict = dict()
-    # detect if the function was called by Sns
-    if 'Records' in event:
-        message = event['Records'][0]['Sns']['Message']
-        LOGGER.debug(message)
-        jsonmessage = json.loads(message)
-        accountid = jsonmessage['AccountId']
-        email = jsonmessage['Email']
-        aws_account_dict.update({accountid: email})
-    else:
-        # Not called by Sns so enumerating accounts, and recursively
-        # calling itself via sns
-        aws_account_dict = get_account_list()
-        sns_client = session.client(
-            'sns',
-            region_name=os.environ['AWS_REGION']
+    try:
+        LOGGER.debug('REQUEST RECEIVED:\n %s', event)
+        LOGGER.debug('REQUEST RECEIVED:\n %s', context)
+        guardduty_regions = []
+        admin_account = os.environ['admin_account']
+        admin_session = assume_role(
+            admin_account,
+            os.environ['assume_role']
         )
-        for accountid, email in aws_account_dict.items():
-            # sns is used to fan out the requests, as too many accounts
-            # would result in the function timing out
-            LOGGER.debug(f"Sending job to configure account {accountid}")
-            response = sns_client.publish(
-                TopicArn=os.environ['topic'],
-                Message="{\"AccountId\":\""+accountid+"\","
-                "\"Email\":\""+email+"\"}"
-            )
-        return True
-    for aws_region in guardduty_regions:
-        gd_client = admin_session.client('guardduty', region_name=aws_region)
-        detector_dict = list_detectors(gd_client, aws_region)
-        if detector_dict[aws_region]:
-            LOGGER.debug(f"Found existing detector {detector_dict[aws_region]}"
-                         f" in {aws_region} for {admin_account}")
-            admin_detector_id_dict.update(
-                {aws_region: detector_dict[aws_region]}
-            )
+        if os.environ['region_filter'] == 'GuardDuty':
+            guardduty_regions = get_enabled_regions(
+                session, session.get_available_regions('guardduty',partition_name=os.environ['topic'].split(":")[1]))
+            LOGGER.debug(f"Enabling members in all available GuardDuty "
+                         f"regions {guardduty_regions}")
         else:
-            detector_str = gd_client.create_detector(Enable=True)['DetectorId']
-            LOGGER.info(f"Created detector {detector_str} in {aws_region} "
-                        f"for {admin_account}")
-            admin_detector_id_dict.update({aws_region: detector_str})
-    failed_accounts = []
-    for account in aws_account_dict.keys():
-        if account != os.environ['ct_root_account']:
-            target_session = assume_role(account, os.environ['assume_role'])
-        else:
-            target_session = session
-        for aws_region in guardduty_regions:
-            LOGGER.debug(f"Beginning {account} in {aws_region}")
-            gd_client = target_session.client(
-                'guardduty',
-                region_name=aws_region
-            )
-            detector_dict = list_detectors(gd_client, aws_region)
-            detector_id = detector_dict[aws_region]
-            if detector_id:
-                LOGGER.debug(f"Found existing detector {detector_id} in "
-                             f"{aws_region} for {account}")
-                try:
-                    detector_status = gd_client.get_detector(
-                        DetectorId=detector_id
-                    )
-                    if detector_status['Status'] != 'ENABLED':
-                        update_result = gd_client.update_detector(
-                            DetectorId=detector_id,
-                            Enable=True,
-                            FindingPublishingFrequency=(
-                                detector_status['FindingPublishingFrequency']
-                            )
-                        )
-                        LOGGER.warning(f"Re-enabled disabled detector "
-                                       f"{detector_id} in {aws_region} for "
-                                       f"{account} with {update_result}")
-                except ClientError as e:
-                    LOGGER.debug(f"Error Processing Account {account}")
-                    failed_accounts.append({
-                        'AccountId': account, 'Region': aws_region
-                    })
+            guardduty_regions = get_ct_regions(session)
+            LOGGER.debug(f"Enabling members in all available ControlTower "
+                         f"regions {guardduty_regions}")
+        # Check for Custom Resource Call
+        if 'RequestType' in event and (
+                event['RequestType'] == "Delete" or
+                event['RequestType'] == "Create" or
+                event['RequestType'] == "Update"):
+            action = event['RequestType']
+            if action == "Delete":
+                disable_guardduty(
+                    admin_session,
+                    guardduty_regions,
+                    admin_account
+        )
+                LOGGER.info("Sending Custom Resource Response")
+                responseData = {}
+                send(event, context, "SUCCESS", responseData)
+            if action == "Delete":
+                # Exit on delete so it doesn't re-enable existing accounts
+                raise SystemExit()
             else:
-                detector_str = \
-                    gd_client.create_detector(Enable=True)['DetectorId']
-                LOGGER.info(f"Created detector {detector_str} in "
-                            f"{aws_region} for {account}")
-                detector_id = detector_str
-            admin_detector_id = admin_detector_id_dict[aws_region]
-            member_dict = get_admin_members(
-                admin_session,
-                aws_region,
-                admin_detector_id
+                LOGGER.info("Sending Custom Resource Response")
+                responseData = {}
+                send(event, context, "SUCCESS", responseData)
+        admin_detector_id_dict = dict()
+        aws_account_dict = dict()
+        # detect if the function was called by Sns
+        if 'Records' in event:
+            message = event['Records'][0]['Sns']['Message']
+            LOGGER.debug(message)
+            jsonmessage = json.loads(message)
+            accountid = jsonmessage['AccountId']
+            email = jsonmessage['Email']
+            aws_account_dict.update({accountid: email})
+        else:
+            # Not called by Sns so enumerating accounts, and recursively
+            # calling itself via sns
+            aws_account_dict = get_account_list()
+            sns_client = session.client(
+                'sns',
+                region_name=os.environ['AWS_REGION']
             )
-            if ((account not in member_dict) and
-                    (account != admin_account)):
-                gd_client = admin_session.client(
+            for accountid, email in aws_account_dict.items():
+                # sns is used to fan out the requests, as too many accounts
+                # would result in the function timing out
+                LOGGER.debug(f"Sending job to configure account {accountid}")
+                response = sns_client.publish(
+                    TopicArn=os.environ['topic'],
+                    Message="{\"AccountId\":\""+accountid+"\","
+                    "\"Email\":\""+email+"\"}"
+                )
+            return True
+        for aws_region in guardduty_regions:
+            gd_client = admin_session.client('guardduty', region_name=aws_region)
+            detector_dict = list_detectors(gd_client, aws_region)
+            if detector_dict[aws_region]:
+                LOGGER.debug(f"Found existing detector {detector_dict[aws_region]}"
+                             f" in {aws_region} for {admin_account}")
+                admin_detector_id_dict.update(
+                    {aws_region: detector_dict[aws_region]}
+                )
+            else:
+                detector_str = gd_client.create_detector(Enable=True)['DetectorId']
+                LOGGER.info(f"Created detector {detector_str} in {aws_region} "
+                            f"for {admin_account}")
+                admin_detector_id_dict.update({aws_region: detector_str})
+        failed_accounts = []
+        for account in aws_account_dict.keys():
+            if account != os.environ['ct_root_account']:
+                target_session = assume_role(account, os.environ['assume_role'])
+            else:
+                target_session = session
+            for aws_region in guardduty_regions:
+                LOGGER.debug(f"Beginning {account} in {aws_region}")
+                gd_client = target_session.client(
                     'guardduty',
                     region_name=aws_region
                 )
-                gd_client.create_members(
-                    AccountDetails=[
-                        {
-                            'AccountId': account,
-                            'Email': aws_account_dict[account]
-                        }
-                    ],
-                    DetectorId=admin_detector_id
-                )
-                LOGGER.info(f"Added Account {account} to member list "
-                            f"in GuardDuty admin account {admin_account} "
-                            f"for region {aws_region}")
-                start_time = int(time.time())
-                while account not in member_dict:
-                    if (int(time.time()) - start_time) > 300:
-                        LOGGER.debug(f"Membership did not show up for "
-                                     f"account {account}, skipping")
-                        break
-                    time.sleep(5)
-                    member_dict = get_admin_members(
-                        admin_session,
-                        aws_region,
-                        admin_detector_id
-                    )
-            else:
-                LOGGER.debug(f"Account {account} is already a member of "
-                             f"{admin_account} in region {aws_region}")
-            if account != admin_account:
-                if member_dict[account] == 'Enabled':
-                    LOGGER.debug(f"Account {account} is already "
-                                 f"{member_dict[account]}")
-                else:
-                    admin_gd_client = admin_session.client(
-                        'guardduty',
-                        region_name=aws_region
-                    )
-                    gd_client = target_session.client(
-                        'guardduty',
-                        region_name=aws_region
-                    )
-                    start_time = int(time.time())
-                    member_dict = get_admin_members(
-                        admin_session,
-                        aws_region,
-                        admin_detector_id
-                    )
-                    while (account not in member_dict) or (member_dict[account] != 'Enabled'):
-                        if (int(time.time()) - start_time) > 300:
-                            LOGGER.debug(f"Enabled status did not show up "
-                                         f"for account {account}, skipping")
-                            break
-                        if account not in member_dict:
-                            member_dict[account] = "missing"
-                        if (account in member_dict) and (member_dict[account] == 'Created'):
-                            admin_gd_client = admin_session.client(
-                                'guardduty', region_name=aws_region
-                            )
-                            admin_gd_client.invite_members(
-                                AccountIds=[account],
-                                DetectorId=admin_detector_id,
-                                DisableEmailNotification=True
-                            )
-                            LOGGER.info(f"Invited Account {account} to "
-                                        f"GuardDuty admin account "
-                                        f"{admin_account} in "
-                                        f"region {aws_region}")
-                        elif (account in member_dict) and (member_dict[account] == 'Invited'):
-                            response = gd_client.list_invitations()
-                            invitation_id = None
-                            for invitation in response['Invitations']:
-                                invitation_id = invitation['InvitationId']
-                            if invitation_id is not None:
-                                gd_client.accept_invitation(
-                                    DetectorId=detector_id,
-                                    InvitationId=invitation_id,
-                                    MasterId=str(admin_account)
+                detector_dict = list_detectors(gd_client, aws_region)
+                detector_id = detector_dict[aws_region]
+                if detector_id:
+                    LOGGER.debug(f"Found existing detector {detector_id} in "
+                                 f"{aws_region} for {account}")
+                    try:
+                        detector_status = gd_client.get_detector(
+                            DetectorId=detector_id
+                        )
+                        if detector_status['Status'] != 'ENABLED':
+                            update_result = gd_client.update_detector(
+                                DetectorId=detector_id,
+                                Enable=True,
+                                FindingPublishingFrequency=(
+                                    detector_status['FindingPublishingFrequency']
                                 )
-                                LOGGER.info(f"Accepting Account {account} to "
-                                            f"GuardDuty admin account "
-                                            f"{admin_account} in "
-                                            f"region {aws_region}")
-                        elif (account in member_dict) and (member_dict[account] == 'Resigned'):
-                            response = admin_gd_client.delete_members(
-                                DetectorId=admin_detector_id,
-                                AccountIds=[account]
                             )
-                            logStatus(
-                                "Removing",
-                                account,
-                                admin_account,
-                                aws_region,
-                                member_dict[account]
-                            )
-                        elif (account in member_dict) and (member_dict[account] == 'Disabled'):
-                            response = admin_gd_client.disassociate_members(
-                                DetectorId=admin_detector_id,
-                                AccountIds=[account]
-                            )
-                            logStatus(
-                                "Disassociating",
-                                account,
-                                admin_account,
-                                aws_region,
-                                member_dict[account]
-                            )
-                        elif (account in member_dict) and (member_dict[account] == 'Removed'):
-                            response = admin_gd_client.delete_members(
-                                DetectorId=admin_detector_id,
-                                AccountIds=[account]
-                            )
-                            logStatus(
-                                "Removing",
-                                account,
-                                admin_account,
-                                aws_region,
-                                member_dict[account]
-                            )
-                        else:
-                            logStatus(
-                                "Waiting",
-                                account,
-                                admin_account,
-                                aws_region,
-                                member_dict[account]
-                            )
+                            LOGGER.warning(f"Re-enabled disabled detector "
+                                           f"{detector_id} in {aws_region} for "
+                                           f"{account} with {update_result}")
+                    except ClientError as e:
+                        LOGGER.debug(f"Error Processing Account {account}")
+                        failed_accounts.append({
+                            'AccountId': account, 'Region': aws_region
+                        })
+                else:
+                    detector_str = \
+                        gd_client.create_detector(Enable=True)['DetectorId']
+                    LOGGER.info(f"Created detector {detector_str} in "
+                                f"{aws_region} for {account}")
+                    detector_id = detector_str
+                admin_detector_id = admin_detector_id_dict[aws_region]
+                member_dict = get_admin_members(
+                    admin_session,
+                    aws_region,
+                    admin_detector_id
+                )
+                if ((account not in member_dict) and
+                        (account != admin_account)):
+                    gd_client = admin_session.client(
+                        'guardduty',
+                        region_name=aws_region
+                    )
+                    gd_client.create_members(
+                        AccountDetails=[
+                            {
+                                'AccountId': account,
+                                'Email': aws_account_dict[account]
+                            }
+                        ],
+                        DetectorId=admin_detector_id
+                    )
+                    LOGGER.info(f"Added Account {account} to member list "
+                                f"in GuardDuty admin account {admin_account} "
+                                f"for region {aws_region}")
+                    start_time = int(time.time())
+                    while account not in member_dict:
+                        if (int(time.time()) - start_time) > 300:
+                            LOGGER.debug(f"Membership did not show up for "
+                                         f"account {account}, skipping")
+                            break
                         time.sleep(5)
                         member_dict = get_admin_members(
                             admin_session,
                             aws_region,
                             admin_detector_id
                         )
-                    LOGGER.debug(f"Finished {account} in {aws_region}")
+                else:
+                    LOGGER.debug(f"Account {account} is already a member of "
+                                 f"{admin_account} in region {aws_region}")
+                if account != admin_account:
+                    if member_dict[account] == 'Enabled':
+                        LOGGER.debug(f"Account {account} is already "
+                                     f"{member_dict[account]}")
+                    else:
+                        admin_gd_client = admin_session.client(
+                            'guardduty',
+                            region_name=aws_region
+                        )
+                        gd_client = target_session.client(
+                            'guardduty',
+                            region_name=aws_region
+                        )
+                        start_time = int(time.time())
+                        member_dict = get_admin_members(
+                            admin_session,
+                            aws_region,
+                            admin_detector_id
+                        )
+                        while (account not in member_dict) or (member_dict[account] != 'Enabled'):
+                            if (int(time.time()) - start_time) > 300:
+                                LOGGER.debug(f"Enabled status did not show up "
+                                             f"for account {account}, skipping")
+                                break
+                            if account not in member_dict:
+                                member_dict[account] = "missing"
+                            if (account in member_dict) and (member_dict[account] == 'Created'):
+                                admin_gd_client = admin_session.client(
+                                    'guardduty', region_name=aws_region
+                                )
+                                admin_gd_client.invite_members(
+                                    AccountIds=[account],
+                                    DetectorId=admin_detector_id,
+                                    DisableEmailNotification=True
+                                )
+                                LOGGER.info(f"Invited Account {account} to "
+                                            f"GuardDuty admin account "
+                                            f"{admin_account} in "
+                                            f"region {aws_region}")
+                            elif (account in member_dict) and (member_dict[account] == 'Invited'):
+                                response = gd_client.list_invitations()
+                                invitation_id = None
+                                for invitation in response['Invitations']:
+                                    invitation_id = invitation['InvitationId']
+                                if invitation_id is not None:
+                                    gd_client.accept_invitation(
+                                        DetectorId=detector_id,
+                                        InvitationId=invitation_id,
+                                        MasterId=str(admin_account)
+                                    )
+                                    LOGGER.info(f"Accepting Account {account} to "
+                                                f"GuardDuty admin account "
+                                                f"{admin_account} in "
+                                                f"region {aws_region}")
+                            elif (account in member_dict) and (member_dict[account] == 'Resigned'):
+                                response = admin_gd_client.delete_members(
+                                    DetectorId=admin_detector_id,
+                                    AccountIds=[account]
+                                )
+                                logStatus(
+                                    "Removing",
+                                    account,
+                                    admin_account,
+                                    aws_region,
+                                    member_dict[account]
+                                )
+                            elif (account in member_dict) and (member_dict[account] == 'Disabled'):
+                                response = admin_gd_client.disassociate_members(
+                                    DetectorId=admin_detector_id,
+                                    AccountIds=[account]
+                                )
+                                logStatus(
+                                    "Disassociating",
+                                    account,
+                                    admin_account,
+                                    aws_region,
+                                    member_dict[account]
+                                )
+                            elif (account in member_dict) and (member_dict[account] == 'Removed'):
+                                response = admin_gd_client.delete_members(
+                                    DetectorId=admin_detector_id,
+                                    AccountIds=[account]
+                                )
+                                logStatus(
+                                    "Removing",
+                                    account,
+                                    admin_account,
+                                    aws_region,
+                                    member_dict[account]
+                                )
+                            else:
+                                logStatus(
+                                    "Waiting",
+                                    account,
+                                    admin_account,
+                                    aws_region,
+                                    member_dict[account]
+                                )
+                            time.sleep(5)
+                            member_dict = get_admin_members(
+                                admin_session,
+                                aws_region,
+                                admin_detector_id
+                            )
+                        LOGGER.debug(f"Finished {account} in {aws_region}")
 
-    if len(failed_accounts) > 0:
-        LOGGER.info("Error Processing following accounts: %s" % (
-            json.dumps(failed_accounts, sort_keys=True, default=str)))
+        if len(failed_accounts) > 0:
+            LOGGER.info("Error Processing following accounts: %s" % (
+                json.dumps(failed_accounts, sort_keys=True, default=str)))
+        cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+    except Exception:
+        cfnresponse.send(event, context, cfnresponse.FAILED, {})
