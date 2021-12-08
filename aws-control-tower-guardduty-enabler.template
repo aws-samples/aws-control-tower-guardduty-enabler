@@ -19,7 +19,7 @@ Parameters:
   RegionFilter:
     Type: String
     Description: Should GuardDuty be enabled for all GuardDuty supported regions, or only Control Tower supported regions?
-    Default: GuardDuty
+    Default: ControlTower
     AllowedValues:
       - GuardDuty
       - ControlTower
