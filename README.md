@@ -15,7 +15,7 @@ The original code for automating GuardDuty enablement in AWS accounts is present
 1. Gather other information for deployment parameters:
 
     - In AWS Organizations, look on the Settings page for the Organization ID. It will be o-xxxxxxxxxx
-    - In AWS Organizations, look on the Accounts page for the Audit account ID.
+    - In AWS Organizations, look on the Accounts page for the Security Account ID.
 
 1. Launch the CloudFormation stack:  aws-control-tower-guardduty-enabler.template
 
