@@ -25,7 +25,6 @@ import os
 import time
 import logging
 import urllib3
-import cfnresponse
 from botocore.exceptions import ClientError
 
 LOGGER = logging.getLogger()
@@ -528,8 +527,7 @@ def lambda_handler(event, context):
                         LOGGER.debug(f"Finished {account} in {aws_region}")
 
         if len(failed_accounts) > 0:
-            LOGGER.info("Error Processing following accounts: %s" % (
+            LOGGER.error("Error Processing following accounts: %s" % (
                 json.dumps(failed_accounts, sort_keys=True, default=str)))
-        cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-    except Exception:
-        cfnresponse.send(event, context, cfnresponse.FAILED, {})
+    except Exception as e:
+        LOGGER.error("Exception: %s" % (str(e)))
