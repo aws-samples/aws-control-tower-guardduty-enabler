@@ -531,3 +531,4 @@ def lambda_handler(event, context):
                 json.dumps(failed_accounts, sort_keys=True, default=str)))
     except Exception as e:
         LOGGER.error("Exception: %s" % (str(e)))
+        send(event, context, 'FAILED', {})
