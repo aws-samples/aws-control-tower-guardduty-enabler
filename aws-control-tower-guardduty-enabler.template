@@ -143,6 +143,7 @@ Resources:
 
   GuardDutyEnablerLambdaLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
     Properties:
       LogGroupName: !Sub "/aws/lambda/${GuardDutyEnablerLambda}"
       RetentionInDays: !Ref LambdaLogRetenion
