@@ -8,7 +8,7 @@ set -x
 SCRIPT_DIRECTORY="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
 pushd $SCRIPT_DIRECTORY > /dev/null
- 
+
 rm -f guardduty_enabler.zip > /dev/null 2>&1
 
 zip guardduty_enabler.zip guardduty_enabler.py
